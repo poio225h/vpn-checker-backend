@@ -8,8 +8,10 @@ import requests
 import base64
 import websocket
 import shutil
+import threading
 from urllib.parse import unquote
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict
 
 # ------------------ Настройки ------------------
 BASE_DIR = "checked"
@@ -36,6 +38,14 @@ MAX_PING_MS = 3000
 FAST_LIMIT = 3000
 MAX_HISTORY_AGE = 2 * 24 * 3600
 
+# Дисковый кэш IP → страна
+IP_CACHE_FILE = os.path.join(BASE_DIR, "ip_cache.json")
+IP_CACHE_MAX_AGE_DAYS = 30
+
+# ip-api: не более ~40 req/min — берём 38 для запаса
+GEO_API_RATE_LIMIT = 38
+GEO_API_WINDOW = 60.0
+
 RU_FILES = ["ru_white_part1.txt", "ru_white_part2.txt", "ru_white_part3.txt", "ru_white_part4.txt"]
 EURO_FILES = ["my_euro_part1.txt", "my_euro_part2.txt", "my_euro_part3.txt"]
 
@@ -60,7 +70,17 @@ URLS_RU = [
 ]
 
 URLS_MY = [
-    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/new/all_new.txt"
+    # 🔹 Максимум источников от Mirror — общий белый список
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/new/all_new.txt",
+    # 🔹 Более аккуратный вход — уже дедупленные по IP:PORT:SCHEME clean/*.txt
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/vless.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/vmess.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/trojan.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/ss.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/hysteria.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/hysteria2.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/hy2.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/tuic.txt",
 ]
 
 EURO_CODES = {
@@ -68,8 +88,6 @@ EURO_CODES = {
     "IT", "ES", "NO", "DK", "BE", "IE", "LU", "EE", "LV", "LT"
 }
 BAD_MARKERS = ["CN", "IR", "KR", "BR", "IN", "RELAY", "POOL", "🇨🇳", "🇮🇷", "🇰🇷"]
-
-# ------------------ Жёсткий фильтр русских выходных серверов ------------------
 
 RU_MARKERS_STRICT = [
     ".ru", "moscow", "msk", "spb", "saint-peter", "russia",
@@ -79,45 +97,14 @@ RU_MARKERS_STRICT = [
     "91.108.", "149.154.",
 ]
 
-def is_russian_exit(key_str, host, country):
-    # Сигнатура не тронута — country теперь уже exit-страна из detect_exit_country_via_http
-    if country == "RU":
-        return True
-    # Резерв: маркеры по хосту/ключу на случай, если geo-API не ответил
-    host_lower = host.lower()
-    key_upper = key_str.upper()
-    if host_lower.endswith(".ru"):
-        return True
-    for marker in RU_MARKERS_STRICT:
-        if marker.lower() in host_lower:
-            return True
-        if marker.upper() in key_upper:
-            return True
-    return False
-
 # ------------------ Страна → название + флаг ------------------
 
 COUNTRY_NAMES_RU = {
-    "RU": "Россия",
-    "NL": "Нидерланды",
-    "DE": "Германия",
-    "FI": "Финляндия",
-    "GB": "Великобритания",
-    "FR": "Франция",
-    "SE": "Швеция",
-    "PL": "Польша",
-    "CZ": "Чехия",
-    "AT": "Австрия",
-    "CH": "Швейцария",
-    "IT": "Италия",
-    "ES": "Испания",
-    "NO": "Норвегия",
-    "DK": "Дания",
-    "BE": "Бельгия",
-    "IE": "Ирландия",
-    "LU": "Люксембург",
-    "EE": "Эстония",
-    "LV": "Латвия",
+    "RU": "Россия", "NL": "Нидерланды", "DE": "Германия", "FI": "Финляндия",
+    "GB": "Великобритания", "FR": "Франция", "SE": "Швеция", "PL": "Польша",
+    "CZ": "Чехия", "AT": "Австрия", "CH": "Швейцария", "IT": "Италия",
+    "ES": "Испания", "NO": "Норвегия", "DK": "Дания", "BE": "Бельгия",
+    "IE": "Ирландия", "LU": "Люксембург", "EE": "Эстония", "LV": "Латвия",
     "LT": "Литва",
 }
 
@@ -135,82 +122,194 @@ def country_to_title_ru(code: str) -> str:
 def country_to_flag(code: str) -> str:
     return COUNTRY_FLAGS.get(code, "")
 
-# ------------------ In-memory кэш IP → страна (чтобы не бомбить geo-API) ------------------
-# Ключ: строка IP-адреса, значение: двухбуквенный код страны или "UNKNOWN"
-_ip_country_cache: dict = {}
 
-def detect_exit_country_via_http(proxy_host: str, proxy_port: int, scheme: str) -> str:
-    """
-    Определяет exit-страну сервера по его реальному IP через ip-api.com.
-    Не маршрутизирует трафик через прокси-протокол — резолвит хост в IP,
-    затем делает прямой запрос к geo-API. Для VLESS/VMess/Trojan exit IP —
-    это и есть IP самого сервера (если нет relay).
+# ==================== GEO-API + КЭШИ ====================
 
-    Возвращает двухбуквенный код страны или "UNKNOWN".
-    """
-    global _ip_country_cache
+# --- Дисковый кэш IP → {country, time} ---
+_disk_ip_cache: dict = {}   # ip → {"country": "XX", "time": float}
+
+def load_ip_cache():
+    global _disk_ip_cache
+    if os.path.exists(IP_CACHE_FILE):
+        try:
+            with open(IP_CACHE_FILE, "r", encoding="utf-8") as f:
+                _disk_ip_cache = json.load(f)
+        except Exception:
+            _disk_ip_cache = {}
+    # Чистим устаревшие записи
+    cutoff = time.time() - IP_CACHE_MAX_AGE_DAYS * 86400
+    _disk_ip_cache = {k: v for k, v in _disk_ip_cache.items() if v.get("time", 0) > cutoff}
+
+def save_ip_cache():
+    os.makedirs(BASE_DIR, exist_ok=True)
     try:
-        # Резолвим хост в IP (с таймаутом через socket.setdefaulttimeout)
-        ip = socket.gethostbyname(proxy_host)
+        with open(IP_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_disk_ip_cache, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
-        if ip in _ip_country_cache:
-            return _ip_country_cache[ip]
+_ip_cache_lock = threading.Lock()
 
-        # ip-api.com: бесплатный, не требует ключа, лимит ~45 req/min
+# --- In-memory кэш host → IP (на время запуска) ---
+_host_to_ip: dict = {}
+_host_ip_lock = threading.Lock()
+
+def resolve_host(host: str) -> str | None:
+    with _host_ip_lock:
+        if host in _host_to_ip:
+            return _host_to_ip[host]
+    try:
+        ip = socket.gethostbyname(host)
+        with _host_ip_lock:
+            _host_to_ip[host] = ip
+        return ip
+    except Exception:
+        with _host_ip_lock:
+            _host_to_ip[host] = None
+        return None
+
+# --- Троттлинг ip-api ---
+_geo_rate_lock = threading.Lock()
+_geo_request_times: list = []      # timestamps последних запросов
+_ip_api_disabled = False            # True после HTTP 429
+
+# --- Счётчики источников страны ---
+_geo_stats = defaultdict(int)   # ключи: "api", "cache", "fast", "unknown"
+_geo_stats_lock = threading.Lock()
+
+def _inc_geo_stat(key: str):
+    with _geo_stats_lock:
+        _geo_stats[key] += 1
+
+def _geo_api_wait_slot() -> bool:
+    """
+    Ждёт, пока не освободится слот в окне GEO_API_RATE_LIMIT / GEO_API_WINDOW.
+    Возвращает False, если ip_api отключён.
+    """
+    global _ip_api_disabled
+    if _ip_api_disabled:
+        return False
+    with _geo_rate_lock:
+        now = time.time()
+        # Убираем метки старше окна
+        cutoff = now - GEO_API_WINDOW
+        while _geo_request_times and _geo_request_times[0] < cutoff:
+            _geo_request_times.pop(0)
+        if len(_geo_request_times) >= GEO_API_RATE_LIMIT:
+            # Ждём до освобождения окна
+            sleep_time = GEO_API_WINDOW - (now - _geo_request_times[0]) + 0.1
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            # Чистим ещё раз после ожидания
+            now = time.time()
+            cutoff = now - GEO_API_WINDOW
+            while _geo_request_times and _geo_request_times[0] < cutoff:
+                _geo_request_times.pop(0)
+        _geo_request_times.append(time.time())
+    return True
+
+
+def detect_exit_country_via_http(proxy_host: str) -> str:
+    """
+    Определяет exit-страну сервера через ip-api.com.
+    Порядок проверки:
+      1. In-memory / дисковый кэш (ip → страна)
+      2. Запрос к ip-api с троттлингом
+      3. При 429 или ошибке — UNKNOWN (без повторных попыток к API)
+    """
+    global _ip_api_disabled
+
+    ip = resolve_host(proxy_host)
+    if not ip:
+        return "UNKNOWN"
+
+    # Сначала кэш
+    with _ip_cache_lock:
+        cached = _disk_ip_cache.get(ip)
+    if cached:
+        _inc_geo_stat("cache")
+        return cached["country"]
+
+    # Если API отключён (429) — сразу UNKNOWN
+    if _ip_api_disabled:
+        return "UNKNOWN"
+
+    # Ждём слот и делаем запрос
+    if not _geo_api_wait_slot():
+        return "UNKNOWN"
+
+    try:
         r = requests.get(
             f"http://ip-api.com/json/{ip}?fields=countryCode",
             timeout=4
         )
+        if r.status_code == 429:
+            _ip_api_disabled = True
+            print("⚠️  ip-api вернул 429 (rate limit) — geo-API отключён до конца запуска")
+            return "UNKNOWN"
         if r.status_code == 200:
-            data = r.json()
-            code = data.get("countryCode", "UNKNOWN") or "UNKNOWN"
-            _ip_country_cache[ip] = code
+            code = r.json().get("countryCode", "UNKNOWN") or "UNKNOWN"
+            with _ip_cache_lock:
+                _disk_ip_cache[ip] = {"country": code, "time": time.time()}
+            _inc_geo_stat("api")
             return code
+    except Exception:
+        pass
+
+    return "UNKNOWN"
+
+
+# ==================== Вспомогательные функции ====================
+
+def get_country_fast(host: str, key_name: str) -> str:
+    """Быстрый hint по доменному суффиксу / тексту ключа. Только fallback."""
+    try:
+        host_l = host.lower()
+        name_u = key_name.upper()
+        if host_l.endswith(".ru"):
+            return "RU"
+        if host_l.endswith(".de"):
+            return "DE"
+        if host_l.endswith(".nl"):
+            return "NL"
+        if host_l.endswith(".uk") or host_l.endswith(".co.uk"):
+            return "GB"
+        if host_l.endswith(".fr"):
+            return "FR"
+        for code in EURO_CODES:
+            if code in name_u:
+                return code
     except Exception:
         pass
     return "UNKNOWN"
 
-# ------------------ Функции ------------------
 
-def load_json(path):
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
+def _has_many_ru_markers(host: str, key_str: str) -> bool:
+    """True, если хост/ключ содержит 2+ жёстких RU‑маркера."""
+    count = 0
+    host_lower = host.lower()
+    key_upper = key_str.upper()
+    for marker in RU_MARKERS_STRICT:
+        if marker.lower() in host_lower or marker.upper() in key_upper:
+            count += 1
+            if count >= 2:
+                return True
+    return False
 
-def save_json(path, data):
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except:
-        pass
 
-def get_country_fast(host, key_name):
-    """Быстрый hint по доменному суффиксу / тексту ключа. Только fallback."""
-    try:
-        host = host.lower()
-        name = key_name.upper()
-        if host.endswith(".ru"):
-            return "RU"
-        if host.endswith(".de"):
-            return "DE"
-        if host.endswith(".nl"):
-            return "NL"
-        if host.endswith(".uk") or host.endswith(".co.uk"):
-            return "GB"
-        if host.endswith(".fr"):
-            return "FR"
-        for code in EURO_CODES:
-            if code in name:
-                return code
-    except:
-        pass
-    return "UNKNOWN"
+def is_russian_exit(key_str: str, host: str, country: str) -> bool:
+    if country == "RU":
+        return True
+    host_lower = host.lower()
+    if host_lower.endswith(".ru"):
+        return True
+    for marker in RU_MARKERS_STRICT:
+        if marker.lower() in host_lower:
+            return True
+    return False
 
-def is_garbage_text(key_str):
+
+def is_garbage_text(key_str: str) -> bool:
     upper = key_str.upper()
     for m in BAD_MARKERS:
         if m in upper:
@@ -218,6 +317,9 @@ def is_garbage_text(key_str):
     if ".ir" in key_str or ".cn" in key_str or "127.0.0.1" in key_str:
         return True
     return False
+
+
+# ==================== Загрузка ключей ====================
 
 def fetch_keys(urls, tag):
     out = []
@@ -232,8 +334,8 @@ def fetch_keys(urls, tag):
             content = r.text.strip()
             if "://" not in content:
                 try:
-                    lines = base64.b64decode(content + "==").decode('utf-8', errors='ignore').splitlines()
-                except:
+                    lines = base64.b64decode(content + "==").decode("utf-8", errors="ignore").splitlines()
+                except Exception:
                     lines = content.splitlines()
             else:
                 lines = content.splitlines()
@@ -245,33 +347,65 @@ def fetch_keys(urls, tag):
                     if tag == "MY" and is_garbage_text(l):
                         continue
                     out.append((l, tag))
-        except:
+        except Exception:
             pass
     return out
 
+
+# ==================== Проверка одного ключа ====================
+
+# Типы ошибок для статистики
+ERR_TIMEOUT = "timeout"
+ERR_TLS = "tls"
+ERR_DNS = "dns"
+ERR_OTHER = "other"
+
+_err_stats = defaultdict(int)
+_err_stats_lock = threading.Lock()
+
+def _inc_err(kind: str):
+    with _err_stats_lock:
+        _err_stats[kind] += 1
+
+
 def check_single_key(data):
+    """
+    Возвращает: (latency_ms | None, tag, country, host, original_key, err_type | None)
+    """
     key, tag = data
     try:
-        if "@" in key and ":" in key:
-            part = key.split("@")[1].split("?")[0].split("#")[0]
-            host, port = part.split(":")[0], int(part.split(":")[1])
-        else:
-            return None, None, None, None, key
+        if "@" not in key or ":" not in key:
+            return None, None, None, None, key, ERR_OTHER
 
-        is_tls = (
-            "security=tls" in key or
-            "security=reality" in key or
-            "trojan://" in key or
-            "vmess://" in key
-        )
-        is_ws = "type=ws" in key or "net=ws" in key
-        path = "/"
-        match = re.search(r"path=([^&]+)", key)
-        if match:
-            path = unquote(match.group(1))
+        part = key.split("@")[1].split("?")[0].split("#")[0]
+        host_port = part.split(":")
+        host = host_port[0]
+        port = int(host_port[1])
+    except Exception:
+        return None, None, None, None, key, ERR_OTHER
 
-        start = time.time()
+    # Ранний отказ для MY-ключей с явными RU-маркерами (ещё до сетевого соединения)
+    if tag == "MY":
+        fast_hint = get_country_fast(host, key)
+        if fast_hint == "RU" and _has_many_ru_markers(host, key):
+            return None, None, None, None, key, ERR_OTHER  # тихо в BLACK
 
+    is_tls = (
+        "security=tls" in key or
+        "security=reality" in key or
+        "trojan://" in key or
+        "vmess://" in key
+    )
+    is_ws = "type=ws" in key or "net=ws" in key
+    path = "/"
+    match = re.search(r"path=([^&]+)", key)
+    if match:
+        path = unquote(match.group(1))
+
+    start = time.time()
+    err_type = None
+
+    try:
         if is_ws:
             protocol = "wss" if is_tls else "ws"
             ws_url = f"{protocol}://{host}:{port}{path}"
@@ -279,7 +413,6 @@ def check_single_key(data):
                 ws_url,
                 timeout=TIMEOUT,
                 sslopt={"cert_reqs": ssl.CERT_NONE},
-                sockopt=((socket.SOL_SOCKET, socket.SO_RCVTIMEO, TIMEOUT),)
             )
             ws.close()
         elif is_tls:
@@ -293,29 +426,51 @@ def check_single_key(data):
             with socket.create_connection((host, port), timeout=TIMEOUT):
                 pass
 
-        latency = int((time.time() - start) * 1000)
+    except socket.timeout:
+        _inc_err(ERR_TIMEOUT)
+        return None, None, None, None, key, ERR_TIMEOUT
+    except ssl.SSLError:
+        _inc_err(ERR_TLS)
+        return None, None, None, None, key, ERR_TLS
+    except socket.gaierror:
+        _inc_err(ERR_DNS)
+        return None, None, None, None, key, ERR_DNS
+    except OSError as e:
+        # Таймаут через ОС (ETIMEDOUT, ECONNREFUSED и т.п.)
+        msg = str(e).lower()
+        if "timed out" in msg or "timeout" in msg:
+            _inc_err(ERR_TIMEOUT)
+            return None, None, None, None, key, ERR_TIMEOUT
+        _inc_err(ERR_OTHER)
+        return None, None, None, None, key, ERR_OTHER
+    except Exception:
+        _inc_err(ERR_OTHER)
+        return None, None, None, None, key, ERR_OTHER
 
-        # ── Определяем exit-страну по реальному IP сервера ──
-        scheme = "wss" if (is_ws and is_tls) else ("ws" if is_ws else ("tls" if is_tls else "tcp"))
-        country_exit = detect_exit_country_via_http(host, port, scheme)
+    latency = int((time.time() - start) * 1000)
 
-        # Fallback: если geo-API не ответил — берём hint по хосту/ключу
+    # Определяем exit-страну
+    country_exit = detect_exit_country_via_http(host)
+
+    if country_exit == "UNKNOWN":
+        country_exit = get_country_fast(host, key)
         if country_exit == "UNKNOWN":
-            country_exit = get_country_fast(host, key)
+            _inc_geo_stat("unknown")
+        else:
+            _inc_geo_stat("fast")
 
-        return latency, tag, country_exit, host, key
-    except:
-        return None, None, None, None, key
+    return latency, tag, country_exit, host, key, None
+
+
+# ==================== Форматирование / сохранение ====================
 
 def make_final_key(k_id, latency, country):
     title_ru = country_to_title_ru(country)
     flag = country_to_flag(country)
-    if country and country != "UNKNOWN":
-        title_full = f"{title_ru} {country}"
-    else:
-        title_full = title_ru
+    title_full = f"{title_ru} {country}" if country and country != "UNKNOWN" else title_ru
     info_str = f"[{latency}ms {title_full} {flag} {MY_CHANNEL}]"
     return f"{k_id}#{info_str}"
+
 
 def extract_ping(key_str):
     try:
@@ -324,14 +479,16 @@ def extract_ping(key_str):
         if match:
             return int(match.group(1))
         return None
-    except:
+    except Exception:
         return None
+
 
 def save_exact(keys, folder, filename):
     path = os.path.join(folder, filename)
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(keys) if keys else "")
     return path
+
 
 def save_fixed_chunks_ru(keys_list, folder):
     valid_keys = [k.strip() for k in keys_list if k and k.strip()]
@@ -347,6 +504,7 @@ def save_fixed_chunks_ru(keys_list, folder):
         print(f"  {filename}: {count} ключей")
     return RU_FILES
 
+
 def save_fixed_chunks_euro(keys_list, folder):
     valid_keys = [k.strip() for k in keys_list if k and k.strip()]
     chunks = [
@@ -361,6 +519,7 @@ def save_fixed_chunks_euro(keys_list, folder):
         print(f"  {filename}: {count} ключей")
     return EURO_FILES
 
+
 def save_chunked(keys_list, folder, base_name, chunk_size=None):
     if chunk_size is None:
         chunk_size = CHUNK_LIMIT
@@ -373,6 +532,29 @@ def save_chunked(keys_list, folder, base_name, chunk_size=None):
         file_names.append(filename)
         print(f"  {filename}: {len(chunk)} ключей")
     return file_names
+
+
+# ==================== JSON-хелперы ====================
+
+def load_json(path):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_json(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+# ==================== Генерация subscriptions_list.txt ====================
 
 def generate_subscriptions_list():
     GITHUB_USER_REPO = "kort0881/vpn-checker-backend"
@@ -428,18 +610,24 @@ def generate_subscriptions_list():
     with open(subs_path, "w", encoding="utf-8") as f:
         f.write("\n".join(subs_lines))
 
-    print(f"\n📋 subscriptions_list.txt создан ({len([l for l in subs_lines if l.startswith('http')])} ссылок):")
+    http_count = sum(1 for l in subs_lines if l.startswith("http"))
+    print(f"\n📋 subscriptions_list.txt создан ({http_count} ссылок):")
     for line in subs_lines:
         if line:
             print(f"  {line}")
 
     return subs_path
 
-# ------------------ MAIN ------------------
+
+# ==================== MAIN ====================
 
 if __name__ == "__main__":
-    print("=== CHECKER v5 (FAST/ALL + WHITE/BLACK) ===")
-    print(f"Параметры: CACHE={CACHE_HOURS}h, MAX_PING={MAX_PING_MS}ms, FAST={FAST_LIMIT}, HISTORY={MAX_HISTORY_AGE//3600}h")
+    print("=== CHECKER v6 (FAST/ALL + WHITE/BLACK + GEO-CACHE + THROTTLE) ===")
+    print(f"Параметры: CACHE={CACHE_HOURS}h, MAX_PING={MAX_PING_MS}ms, FAST={FAST_LIMIT}, HISTORY={MAX_HISTORY_AGE // 3600}h")
+
+    # Загружаем дисковый кэш IP → страна
+    load_ip_cache()
+    print(f"📂 Дисковый ip_cache загружен: {len(_disk_ip_cache)} записей")
 
     history = load_json(HISTORY_FILE)
     tasks = fetch_keys(URLS_RU, "RU") + fetch_keys(URLS_MY, "MY")
@@ -456,6 +644,7 @@ if __name__ == "__main__":
     res_euro = []
     dead_ru = []
     dead_euro = []
+    euro_filtered_ru = 0  # счётчик EURO-ключей, отфильтрованных как RU-exit
 
     print(f"\n📊 Всего уникальных ключей: {len(all_items)}")
 
@@ -464,7 +653,6 @@ if __name__ == "__main__":
         cached = history.get(k_id)
 
         if cached and (current_time - cached["time"] < CACHE_HOURS * 3600) and cached["alive"]:
-            # country в кэше — уже exit-страна (для старых записей — hint, обновится при следующей проверке)
             latency = cached["latency"]
             country = cached.get("country", "UNKNOWN")
             host = cached.get("host", "")
@@ -472,23 +660,33 @@ if __name__ == "__main__":
 
             if tag == "RU":
                 res_ru.append(final)
-            elif tag == "MY" and not is_russian_exit(k, host, country):
-                res_euro.append(final)
+            elif tag == "MY":
+                if is_russian_exit(k, host, country):
+                    euro_filtered_ru += 1
+                else:
+                    res_euro.append(final)
         else:
             to_check.append((k, tag))
 
-    print(f"✅ Из кэша: RU={len(res_ru)}, EURO={len(res_euro)}")
+    print(f"✅ Из кэша: RU={len(res_ru)}, EURO={len(res_euro)}, EURO→RU filtered={euro_filtered_ru}")
     print(f"🔍 На проверку: {len(to_check)}")
 
     if to_check:
-        checked_count = 0
-        with ThreadPoolExecutor(max_workers=THREADS) as executor:
-            future_to_item = {executor.submit(check_single_key, item): item for item in to_check}
+        checked_ok = 0
 
-            for future in future_to_item:
-                key, tag = future_to_item[future]
-                res = future.result()
-                latency, _, country, host, original_key = res
+        with ThreadPoolExecutor(max_workers=THREADS) as executor:
+            future_map = {executor.submit(check_single_key, item): item for item in to_check}
+
+            for future in as_completed(future_map):
+                key, tag = future_map[future]
+                try:
+                    latency, _, country, host, original_key, err_type = future.result()
+                except Exception:
+                    if tag == "RU":
+                        dead_ru.append(key)
+                    else:
+                        dead_euro.append(key)
+                    continue
 
                 if latency is None:
                     if tag == "RU":
@@ -498,13 +696,11 @@ if __name__ == "__main__":
                     continue
 
                 k_id = original_key.split("#")[0]
-
-                # Сохраняем exit-страну (формат history не меняется)
                 history[k_id] = {
                     "alive": True,
                     "latency": latency,
                     "time": time.time(),
-                    "country": country,   # теперь exit-страна
+                    "country": country,
                     "host": host,
                 }
 
@@ -512,20 +708,25 @@ if __name__ == "__main__":
 
                 if tag == "RU":
                     res_ru.append(final)
-                elif tag == "MY" and not is_russian_exit(original_key, host, country):
-                    res_euro.append(final)
+                elif tag == "MY":
+                    if is_russian_exit(original_key, host, country):
+                        euro_filtered_ru += 1
+                        dead_euro.append(original_key)
+                    else:
+                        res_euro.append(final)
 
-                checked_count += 1
+                checked_ok += 1
 
-        print(f"✅ Проверено успешно: {checked_count}")
+        print(f"✅ Проверено успешно: {checked_ok}")
 
+    # Сохраняем дисковый кэш IP
+    save_ip_cache()
+    print(f"💾 ip_cache сохранён: {len(_disk_ip_cache)} записей")
+
+    # Чистим историю
     save_json(
         HISTORY_FILE,
-        {
-            k: v
-            for k, v in history.items()
-            if current_time - v["time"] < MAX_HISTORY_AGE
-        },
+        {k: v for k, v in history.items() if current_time - v["time"] < MAX_HISTORY_AGE}
     )
 
     res_ru_clean = [k for k in res_ru if extract_ping(k) is not None and extract_ping(k) <= MAX_PING_MS]
@@ -540,8 +741,6 @@ if __name__ == "__main__":
 
     res_ru_fast = res_ru_clean[:FAST_LIMIT]
     res_euro_fast = res_euro_clean[:FAST_LIMIT]
-    res_ru_all = res_ru_clean
-    res_euro_all = res_euro_clean
 
     print(f"\n🚀 FAST слои (топ {FAST_LIMIT}):")
     print(f"  RU FAST: {len(res_ru_fast)}")
@@ -554,24 +753,50 @@ if __name__ == "__main__":
     save_fixed_chunks_euro(res_euro_fast, FOLDER_EURO)
 
     print(f"\n💾 Сохранение RU ALL → {FOLDER_RU}:")
-    ru_all_files = save_chunked(res_ru_all, FOLDER_RU, "ru_white_all")
+    save_chunked(res_ru_clean, FOLDER_RU, "ru_white_all")
 
     print(f"\n💾 Сохранение EURO ALL → {FOLDER_EURO} (по {EURO_CHUNK_LIMIT} ключей):")
-    euro_all_files = save_chunked(res_euro_all, FOLDER_EURO, "my_euro_all", chunk_size=EURO_CHUNK_LIMIT)
+    save_chunked(res_euro_clean, FOLDER_EURO, "my_euro_all", chunk_size=EURO_CHUNK_LIMIT)
 
     print(f"\n💾 WHITE/BLACK → {FOLDER_RU}:")
-    save_exact(res_ru_all, FOLDER_RU, "ru_white_all_WHITE.txt")
+    save_exact(res_ru_clean, FOLDER_RU, "ru_white_all_WHITE.txt")
     save_exact(dead_ru, FOLDER_RU, "ru_white_all_BLACK.txt")
 
     print(f"\n💾 WHITE/BLACK → {FOLDER_EURO}:")
-    save_exact(res_euro_all, FOLDER_EURO, "my_euro_all_WHITE.txt")
+    save_exact(res_euro_clean, FOLDER_EURO, "my_euro_all_WHITE.txt")
     save_exact(dead_euro, FOLDER_EURO, "my_euro_all_BLACK.txt")
 
     generate_subscriptions_list()
 
+    # ==================== ФИНАЛЬНЫЙ ОТЧЁТ ====================
+    print("\n" + "=" * 55)
+    print("📊 ФИНАЛЬНЫЙ ОТЧЁТ")
+    print("=" * 55)
+
+    print(f"\n✅ Результат:")
+    print(f"  RU FAST: {len(res_ru_fast)}, RU WHITE: {len(res_ru_clean)}, RU BLACK: {len(dead_ru)}")
+    print(f"  EURO FAST: {len(res_euro_fast)}, EURO WHITE: {len(res_euro_clean)}, EURO BLACK: {len(dead_euro)}")
+    print(f"  EURO ключей отфильтровано как RU-exit: {euro_filtered_ru}")
+
+    print(f"\n🌍 Источник страны (geo-статистика):")
+    with _geo_stats_lock:
+        stats = dict(_geo_stats)
+    total_geo = sum(stats.values()) or 1
+    for src in ("api", "cache", "fast", "unknown"):
+        n = stats.get(src, 0)
+        print(f"  {src:8s}: {n:5d}  ({n * 100 // total_geo}%)")
+    if _ip_api_disabled:
+        print("  ⚠️  ip-api был отключён из-за 429 в процессе работы")
+
+    print(f"\n❌ Ошибки соединения:")
+    with _err_stats_lock:
+        estats = dict(_err_stats)
+    total_err = sum(estats.values()) or 1
+    for kind in (ERR_TIMEOUT, ERR_TLS, ERR_DNS, ERR_OTHER):
+        n = estats.get(kind, 0)
+        print(f"  {kind:8s}: {n:5d}  ({n * 100 // total_err}%)")
+
     print("\n✅ SUCCESS: FAST/ALL + WHITE/BLACK GENERATED")
-    print(f"  RU FAST: {len(res_ru_fast)}, RU WHITE: {len(res_ru_all)}, RU BLACK: {len(dead_ru)}")
-    print(f"  EURO FAST: {len(res_euro_fast)}, EURO WHITE: {len(res_euro_all)}, EURO BLACK: {len(dead_euro)}")
 
 
 
