@@ -1,0 +1,55 @@
+name: Auto ALL Checker
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # каждые 6 часов, или сдвинь под себя
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  check-all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync latest main
+        run: |
+          git config pull.rebase true
+          git pull origin main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download Xray linux amd64
+        run: |
+          curl -L "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" -o xray.zip
+          unzip -o xray.zip
+          chmod +x xray
+
+      - name: Run ALL Checker Script
+        run: python checker_all.py
+        timeout-minutes: 170
+        env:
+          PYTHONUNBUFFERED: 1
+
+      - name: Commit & Push Results
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🤖 Auto-update ALL checked keys [${{ github.run_id }}]"
+          file_pattern: "checked/*"
+          commit_user_name: "GitHub Actions Bot"
