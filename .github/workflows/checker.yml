@@ -55,4 +55,7 @@ jobs:
           commit_user_name: "GitHub Actions Bot"
           commit_user_email: "actions@github.com"
           push_options: '--force-with-lease'  # Безопасный force на случай редких гонок
-
+      - name: Send to Telegram
+        run: |
+          curl -F chat_id=${{ secrets.TELEGRAM_CHAT_ID }} -F document=@checked/vless.txt https://api.telegram.org/bot{{ secrets.TELEGRAM_TOKEN }}/sendDocument
+          curl -F chat_id=${{ secrets.TELEGRAM_CHAT_ID }} -F document=@checked/trojan.txt https://api.telegram.org/bot{{ secrets.TELEGRAM_TOKEN }}/sendDocument
