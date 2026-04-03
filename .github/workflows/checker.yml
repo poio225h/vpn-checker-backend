@@ -57,4 +57,4 @@ jobs:
           push_options: '--force-with-lease'  # Безопасный force на случай редких гонок
       - name: Send to Telegram
         run: |
-          find . -maxdepth 2 -name "*.txt" -exec curl -v -F chat_id=${{ secrets.TELEGRAM_CHAT_ID }} -F document=@{} https://telegram.org{{ secrets.TELEGRAM_TOKEN }}/sendDocument \;
+          find . -maxdepth 2 -name "*.txt" -exec curl -v -F chat_id=${{ secrets.TELEGRAM_CHAT_ID }} -F document=@{} https://api.telegram.org/bot{{ secrets.TELEGRAM_TOKEN }}/sendDocument \;
