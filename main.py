@@ -824,6 +824,32 @@ if __name__ == "__main__":
         print(f"  {kind:8s}: {n:5d}  ({n * 100 // total_err}%)")
 
     print("\n✅ SUCCESS: FAST/ALL + WHITE/BLACK GENERATED")
+           # --- БЛОК ОЧИСТКИ ОТ ДУБЛЕЙ И МУСОРА ---
+# Предположим, твой список с ключами называется all_results или подобно.
+# Мы берем все файлы из папки checked и чистим их.
+
+import os
+
+directory = 'checked'
+if os.path.exists(directory):
+    for filename in os.listdir(directory):
+        if filename.endswith(".txt"):
+            filepath = os.path.join(directory, filename)
+            
+            # Читаем файл, убираем пробелы и пустые строки
+            with open(filepath, 'r', encoding='utf-8') as f:
+                lines = f.read().splitlines()
+            
+            # МАГИЯ: set() удаляет все одинаковые строки (дубликаты)
+            # Фильтр len(line) > 30 убирает короткий мусор и рекламу
+            clean_lines = sorted(list(set([line.strip() for line in lines if len(line.strip()) > 30])))
+            
+            # Записываем обратно чистый результат
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(clean_lines) + '\n')
+
+print(f"Готово! Все дубликаты удалены, мусор отсеян.")
+
 
 
 
