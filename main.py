@@ -824,46 +824,23 @@ if __name__ == "__main__":
         print(f"  {kind:8s}: {n:5d}  ({n * 100 // total_err}%)")
 
     print("\n✅ SUCCESS: FAST/ALL + WHITE/BLACK GENERATED")
-         import socket
-import re
-import concurrent.futures
+  import socket
 
-def check_proxy(proxy_line):
-    """Проверяет, открыт ли порт у прокси-сервера"""
+def check_proxy(host, port):
+    """Простейшая проверка: открыт ли порт у сервера"""
     try:
-        # Вытаскиваем адрес и порт из любой ссылки (vless, vmess, ss и т.д.)
-        match = re.search(r'@?([^:/]+):(\d+)', proxy_line)
-        if not match: return None
-        
-        host, port = match.group(1), int(match.group(2))
-        
-        # Пытаемся подключиться за 1.5 секунды (чтобы отсеять медленные)
-        with socket.create_connection((host, port), timeout=1.5):
-            return proxy_line
+        # Пытаемся подключиться к IP:PORT за 2 секунды
+        socket.setdefaulttimeout(2)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((host, port))
+        s.close()
+        return True
     except:
-        return None
+        return False
 
-# --- ЗАПУСК ПРОВЕРКИ ---
-directory = 'checked'
-for filename in os.listdir(directory):
-    if filename.endswith(".txt"):
-        path = os.path.join(directory, filename)
-        with open(path, 'r', encoding='utf-8') as f:
-            lines = list(set(f.read().splitlines())) # Сначала убираем дубли
-        
-        print(f"Проверяем {len(lines)} ключей в {filename}...")
-        
-        # Запускаем проверку в 50 потоков (GitHub это позволяет)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-            results = list(executor.map(check_proxy, lines))
-        
-        # Оставляем только те, что прошли проверку (не None)
-        live_proxies = [r for r in results if r is not None]
-        
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(live_proxies) + '\n')
-        print(f"Готово! Живых: {len(live_proxies)}")
-
+# ПРИМЕР ФИЛЬТРАЦИИ ВНУТРИ ТВОЕГО ЦИКЛА:
+# Если скрипт нашел IP и PORT, вызываем check_proxy(ip, port)
+# Если True — записываем в файл, если False — выкидываем.
 
 
 
