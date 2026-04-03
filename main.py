@@ -824,7 +824,64 @@ if __name__ == "__main__":
         print(f"  {kind:8s}: {n:5d}  ({n * 100 // total_err}%)")
 
     print("\n✅ SUCCESS: FAST/ALL + WHITE/BLACK GENERATED")
- 
+ # === БЛОК ФИНАЛЬНОЙ ПРОВЕРКИ И ОЧИСТКИ ОТ МУСОРА ===
+import os
+import socket
+import concurrent.futures
+import re
+
+def check_proxy_status(proxy_line):
+    """Проверяет, отвечает ли сервер по указанному порту"""
+    try:
+        # Регулярка вытаскивает IP/домен и ПОРТ из любой ссылки (vless, vmess, trojan, ss)
+        match = re.search(r'@?([^:/?#]+):(\d+)', proxy_line)
+        if not match:
+            return None
+        
+        host = match.group(1).strip()
+        port = int(match.group(2).strip())
+        
+        # Тайм-аут 1.5 секунды, чтобы отсеять совсем медленные
+        with socket.create_connection((host, port), timeout=1.5):
+            return proxy_line
+    except:
+        return None
+
+def process_files():
+    target_dir = 'checked'
+    if not os.path.exists(target_dir):
+        print(f"Папка {target_dir} не найдена, пропускаю проверку.")
+        return
+
+    for filename in os.listdir(target_dir):
+        if filename.endswith(".txt"):
+            file_path = os.path.join(target_dir, filename)
+            
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                # Сразу убираем дубликаты через set()
+                raw_lines = list(set(line.strip() for line in f if len(line.strip()) > 30))
+
+            if not raw_lines:
+                continue
+
+            print(f"Проверяю {filename}: было {len(raw_lines)} строк...")
+
+            # Запускаем проверку в 50 потоков для скорости (GitHub выдержит)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+                live_results = list(executor.map(check_proxy_status, raw_lines))
+
+            # Оставляем только те, что выдали ответ
+            final_list = [res for res in live_results if res is not None]
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(final_list) + '\n')
+            
+            print(f"Файл {filename} готов: осталось {len(final_list)} живых ключей.")
+
+# Запуск процесса очистки
+if __name__ == "__main__":
+    process_files()
+
 
 
 
