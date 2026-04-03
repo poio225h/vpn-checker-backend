@@ -81,6 +81,9 @@ URLS_MY = [
     "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/hysteria2.txt",
     "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/hy2.txt",
     "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/tuic.txt",
+      # --- НОВЫЕ ИСТОЧНИКИ ДЛЯ ЕВРОПЫ ---
+    "https://t.me/s/AzadNet",
+      # --- НОВЫЕ ИСТОЧНИКИ ДЛЯ РОССИИ ---
 ]
 
 EURO_CODES = {
