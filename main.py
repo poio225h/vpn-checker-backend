@@ -824,47 +824,70 @@ if __name__ == "__main__":
         print(f"  {kind:8s}: {n:5d}  ({n * 100 // total_err}%)")
 
     print("\n✅ SUCCESS: FAST/ALL + WHITE/BLACK GENERATED")
-# === ФИНАЛЬНЫЙ ГЕНЕРАЛЬНЫЙ ПОРЯДОК ===
-import os, socket, concurrent.futures, re
+# === ФИНАЛЬНЫЙ ЭЛИТНЫЙ ФИЛЬТР (ВСТАВИТЬ В КОНЕЦ ФАЙЛА) ===
+import os
+import socket
+import concurrent.futures
+import re
 
-def final_proxy_check(line):
+def final_smart_check(line):
     line = line.strip()
     if not line or len(line) < 20: return None
-    if line.startswith("http"): return line # Ссылки на каналы не трогаем
+    
+    # 1. Ссылки на каналы и сборники (http) - ОСТАВЛЯЕМ БЕЗ ИЗМЕНЕНИЙ
+    if line.startswith("http"):
+        return line
+        
+    # 2. Прокси-ссылки (vless, vmess, ss и др.) - ПРОВЕРЯЕМ БЫСТРЫЙ ОТКЛИК
     try:
+        # Ищем хост и порт
         match = re.search(r'@?([^:/?#]+):(\d+)', line)
         if not match: return None
-        h, p = match.group(1).strip(), int(match.group(2).strip())
-        with socket.create_connection((h, p), timeout=1.5):
+        
+        host = match.group(1).strip()
+        port = int(match.group(2).strip())
+        
+        # ТАЙМ-АУТ 1.2 СЕКУНДЫ (только для быстрых)
+        with socket.create_connection((host, port), timeout=1.2):
             return line
-    except: return None
+    except:
+        return None # Медленные и нерабочие удаляем
 
-def global_cleanup():
-    # Ищем файлы во ВСЕХ подпапках (RU_Best, My_Euro и т.д.)
-    for root, dirs, files in os.walk("checked"):
-        for file in files:
-            if file.endswith(".txt"):
-                path = os.path.join(root, file)
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    # Убираем дубликаты и мусор
-                    data = list(set(l.strip() for l in f if len(l.strip()) > 15))
-                
-                if not data: continue
-                with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
-                    clean = [r for r in ex.map(final_proxy_check, data) if r is not None]
-                
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write('\n'.join(sorted(clean)) + '\n')
+def run_global_cleanup():
+    # Проходим по всем папкам, которые создал твой скрипт
+    target_folders = [FOLDER_RU, FOLDER_EURO, BASE_DIR]
+    
+    for folder in target_folders:
+        if not os.path.exists(folder): continue
+        
+        for root, dirs, files in os.walk(folder):
+            for filename in files:
+                if filename.endswith(".txt"):
+                    file_path = os.path.join(root, filename)
+                    
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        # Убираем дубликаты сразу через set()
+                        raw_lines = list(set(l.strip() for l in f if len(l.strip()) > 10))
 
-# НАЙДИ В СВОЁМ КОДЕ ВЫЗОВ ОСНОВНОЙ ФУНКЦИИ (обычно в самом конце)
-# И добавь вызов очистки ПОСЛЕ неё:
+                    if not raw_lines: continue
+
+                    # Проверка в 100 потоков (GitHub Actions это делает мгновенно)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
+                        clean_results = list(executor.map(final_smart_check, raw_lines))
+
+                    # Собираем только живое и ссылки
+                    final_output = [r for r in clean_results if r is not None]
+
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        # Сортируем: сначала ссылки http, потом прокси
+                        f.write('\n'.join(sorted(final_output)) + '\n')
+
+# Запуск фильтрации ПОСЛЕ завершения работы твоего основного кода
 if __name__ == "__main__":
-    # Тут может быть твой вызов, например: main() 
-    # СРАЗУ ПОСЛЕ НЕГО ПИШЕМ:
-    global_cleanup()
-    print("Всё! Архив на диске D будет идеально чистым.")
-
-
+    # Вызываем очистку. Если в твоем коде в конце есть main(), 
+    # убедись, что run_global_cleanup() стоит ПОСЛЕ него.
+    run_global_cleanup()
+    print("🧹 Глобальная чистка завершена: ссылки сохранены, медленные прокси удалены!")
 
 
 
