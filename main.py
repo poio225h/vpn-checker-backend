@@ -824,26 +824,7 @@ if __name__ == "__main__":
         print(f"  {kind:8s}: {n:5d}  ({n * 100 // total_err}%)")
 
     print("\n✅ SUCCESS: FAST/ALL + WHITE/BLACK GENERATED")
-  import socket
-
-def check_proxy(host, port):
-    """Простейшая проверка: открыт ли порт у сервера"""
-    try:
-        # Пытаемся подключиться к IP:PORT за 2 секунды
-        socket.setdefaulttimeout(2)
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((host, port))
-        s.close()
-        return True
-    except:
-        return False
-
-# ПРИМЕР ФИЛЬТРАЦИИ ВНУТРИ ТВОЕГО ЦИКЛА:
-# Если скрипт нашел IP и PORT, вызываем check_proxy(ip, port)
-# Если True — записываем в файл, если False — выкидываем.
-
-
-
+ 
 
 
 
