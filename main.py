@@ -824,6 +824,67 @@ if __name__ == "__main__":
         print(f"  {kind:8s}: {n:5d}  ({n * 100 // total_err}%)")
 
     print("\n✅ SUCCESS: FAST/ALL + WHITE/BLACK GENERATED")
+# === ФИНАЛЬНЫЙ ФИЛЬТР: УДАЛЯЕМ ТРУПЫ, ОСТАВЛЯЕМ ССЫЛКИ ===
+import os
+import socket
+import concurrent.futures
+import re
+
+def final_smart_check(line):
+    line = line.strip()
+    if not line: return None
+    
+    # Если это ссылка на канал или подписку (http) — НЕ ТРОГАЕМ
+    if line.startswith("http"):
+        return line
+        
+    # Если это прокси (vless, vmess, ss и т.д.) — ПРОВЕРЯЕМ ОТКЛИК
+    try:
+        # Ищем IP и PORT в строке
+        match = re.search(r'@?([^:/?#]+):(\d+)', line)
+        if not match: return None
+        
+        host, port = match.group(1).strip(), int(match.group(2).strip())
+        
+        # Пытаемся подключиться за 1.5 сек (отсеиваем дохлых)
+        with socket.create_connection((host, port), timeout=1.5):
+            return line
+    except:
+        return None
+
+def run_final_cleanup():
+    # Твоя папка из настроек BASE_DIR = "checked"
+    target_dir = "checked"
+    if not os.path.exists(target_dir): return
+
+    # Проходим по всем папкам и подпапкам (RU_Best, My_Euro и т.д.)
+    for root, dirs, files in os.walk(target_dir):
+        for filename in files:
+            if filename.endswith(".txt"):
+                file_path = os.path.join(root, filename)
+                
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    # Убираем дубликаты сразу через set
+                    raw_lines = list(set(l.strip() for l in f if len(l.strip()) > 10))
+
+                if not raw_lines: continue
+
+                # Проверяем в 50 потоков (GitHub сервера это делают мгновенно)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+                    clean_results = list(executor.map(final_smart_check, raw_lines))
+
+                # Оставляем только живое + ссылки
+                final_output = [r for r in clean_results if r is not None]
+
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(final_output) + '\n')
+
+# Запуск фильтрации после работы основного скрипта
+if __name__ == "__main__":
+    # Если в твоем коде в конце есть вызов основной функции (например main()), 
+    # убедись, что run_final_cleanup() стоит ПОСЛЕ неё.
+    run_final_cleanup()
+    print("Фильтрация завершена: ссылки сохранены, мертвые прокси удалены!")
 
 
 
