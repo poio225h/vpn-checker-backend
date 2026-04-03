@@ -824,68 +824,45 @@ if __name__ == "__main__":
         print(f"  {kind:8s}: {n:5d}  ({n * 100 // total_err}%)")
 
     print("\n✅ SUCCESS: FAST/ALL + WHITE/BLACK GENERATED")
-# === ФИНАЛЬНЫЙ ФИЛЬТР: УДАЛЯЕМ ТРУПЫ, ОСТАВЛЯЕМ ССЫЛКИ ===
-import os
-import socket
-import concurrent.futures
-import re
+# === ФИНАЛЬНЫЙ ГЕНЕРАЛЬНЫЙ ПОРЯДОК ===
+import os, socket, concurrent.futures, re
 
-def final_smart_check(line):
+def final_proxy_check(line):
     line = line.strip()
-    if not line: return None
-    
-    # Если это ссылка на канал или подписку (http) — НЕ ТРОГАЕМ
-    if line.startswith("http"):
-        return line
-        
-    # Если это прокси (vless, vmess, ss и т.д.) — ПРОВЕРЯЕМ ОТКЛИК
+    if not line or len(line) < 20: return None
+    if line.startswith("http"): return line # Ссылки на каналы не трогаем
     try:
-        # Ищем IP и PORT в строке
         match = re.search(r'@?([^:/?#]+):(\d+)', line)
         if not match: return None
-        
-        host, port = match.group(1).strip(), int(match.group(2).strip())
-        
-        # Пытаемся подключиться за 1.5 сек (отсеиваем дохлых)
-        with socket.create_connection((host, port), timeout=1.5):
+        h, p = match.group(1).strip(), int(match.group(2).strip())
+        with socket.create_connection((h, p), timeout=1.5):
             return line
-    except:
-        return None
+    except: return None
 
-def run_final_cleanup():
-    # Твоя папка из настроек BASE_DIR = "checked"
-    target_dir = "checked"
-    if not os.path.exists(target_dir): return
-
-    # Проходим по всем папкам и подпапкам (RU_Best, My_Euro и т.д.)
-    for root, dirs, files in os.walk(target_dir):
-        for filename in files:
-            if filename.endswith(".txt"):
-                file_path = os.path.join(root, filename)
+def global_cleanup():
+    # Ищем файлы во ВСЕХ подпапках (RU_Best, My_Euro и т.д.)
+    for root, dirs, files in os.walk("checked"):
+        for file in files:
+            if file.endswith(".txt"):
+                path = os.path.join(root, file)
+                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    # Убираем дубликаты и мусор
+                    data = list(set(l.strip() for l in f if len(l.strip()) > 15))
                 
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    # Убираем дубликаты сразу через set
-                    raw_lines = list(set(l.strip() for l in f if len(l.strip()) > 10))
+                if not data: continue
+                with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
+                    clean = [r for r in ex.map(final_proxy_check, data) if r is not None]
+                
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(sorted(clean)) + '\n')
 
-                if not raw_lines: continue
-
-                # Проверяем в 50 потоков (GitHub сервера это делают мгновенно)
-                with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-                    clean_results = list(executor.map(final_smart_check, raw_lines))
-
-                # Оставляем только живое + ссылки
-                final_output = [r for r in clean_results if r is not None]
-
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write('\n'.join(final_output) + '\n')
-
-# Запуск фильтрации после работы основного скрипта
+# НАЙДИ В СВОЁМ КОДЕ ВЫЗОВ ОСНОВНОЙ ФУНКЦИИ (обычно в самом конце)
+# И добавь вызов очистки ПОСЛЕ неё:
 if __name__ == "__main__":
-    # Если в твоем коде в конце есть вызов основной функции (например main()), 
-    # убедись, что run_final_cleanup() стоит ПОСЛЕ неё.
-    run_final_cleanup()
-    print("Фильтрация завершена: ссылки сохранены, мертвые прокси удалены!")
-
+    # Тут может быть твой вызов, например: main() 
+    # СРАЗУ ПОСЛЕ НЕГО ПИШЕМ:
+    global_cleanup()
+    print("Всё! Архив на диске D будет идеально чистым.")
 
 
 
