@@ -824,34 +824,45 @@ if __name__ == "__main__":
         print(f"  {kind:8s}: {n:5d}  ({n * 100 // total_err}%)")
 
     print("\n✅ SUCCESS: FAST/ALL + WHITE/BLACK GENERATED")
-           # --- БЛОК ОЧИСТКИ ОТ ДУБЛЕЙ И МУСОРА ---
-# Предположим, твой список с ключами называется all_results или подобно.
-# Мы берем все файлы из папки checked и чистим их.
+         import socket
+import re
+import concurrent.futures
 
-import os
+def check_proxy(proxy_line):
+    """Проверяет, открыт ли порт у прокси-сервера"""
+    try:
+        # Вытаскиваем адрес и порт из любой ссылки (vless, vmess, ss и т.д.)
+        match = re.search(r'@?([^:/]+):(\d+)', proxy_line)
+        if not match: return None
+        
+        host, port = match.group(1), int(match.group(2))
+        
+        # Пытаемся подключиться за 1.5 секунды (чтобы отсеять медленные)
+        with socket.create_connection((host, port), timeout=1.5):
+            return proxy_line
+    except:
+        return None
 
+# --- ЗАПУСК ПРОВЕРКИ ---
 directory = 'checked'
-if os.path.exists(directory):
-    for filename in os.listdir(directory):
-        if filename.endswith(".txt"):
-            filepath = os.path.join(directory, filename)
-            
-            # Читаем файл, убираем пробелы и пустые строки
-            with open(filepath, 'r', encoding='utf-8') as f:
-                lines = f.read().splitlines()
-            
-            # МАГИЯ: set() удаляет все одинаковые строки (дубликаты)
-            # Фильтр len(line) > 30 убирает короткий мусор и рекламу
-            clean_lines = sorted(list(set([line.strip() for line in lines if len(line.strip()) > 30])))
-            
-            # Записываем обратно чистый результат
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(clean_lines) + '\n')
-
-print(f"Готово! Все дубликаты удалены, мусор отсеян.")
-
-
-
+for filename in os.listdir(directory):
+    if filename.endswith(".txt"):
+        path = os.path.join(directory, filename)
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = list(set(f.read().splitlines())) # Сначала убираем дубли
+        
+        print(f"Проверяем {len(lines)} ключей в {filename}...")
+        
+        # Запускаем проверку в 50 потоков (GitHub это позволяет)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            results = list(executor.map(check_proxy, lines))
+        
+        # Оставляем только те, что прошли проверку (не None)
+        live_proxies = [r for r in results if r is not None]
+        
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(live_proxies) + '\n')
+        print(f"Готово! Живых: {len(live_proxies)}")
 
 
 
