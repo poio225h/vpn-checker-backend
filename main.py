@@ -83,6 +83,33 @@ URLS_MY = [
     "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/tuic.txt",
       # --- НОВЫЕ ИСТОЧНИКИ ДЛЯ ЕВРОПЫ ---
     "https://t.me/s/AzadNet",
+    "https://t.me/s/oneclickvpnkeys",
+"https://t.me/s/vpnfail_vless",
+"https://t.me/s/vless_freee",
+"https://t.me/s/FREE_vless",
+"https://t.me/s/vlesskeys_free",
+"https://t.me/s/v2rayy_vip",
+"https://t.me/s/Vip_vpn_v2ray",
+"https://t.me/s/V2rayNG_VIPConfigs",
+"https://t.me/s/ViPVpn_v2ray",
+"https://t.me/s/mojiaCNF",
+"https://t.me/s/nV_v2ray",
+"https://t.me/s/freeeirannet",
+"https://t.me/s/v2ray_configs_vpn",
+"https://t.me/s/vpn_v2ray_archive",
+"https://t.me/s/freevpn12340",
+"https://t.me/s/freevpn_v2ray",
+"https://t.me/s/freevpn4ever",
+"https://t.me/s/v2ray_proxy_vpn",
+"https://t.me/s/v2ray_freevpn",
+"https://t.me/s/v2ray_free_conf",
+"https://t.me/s/Free_V2ray_Config",
+"https://t.me/s/t.me/V2raytunn",
+"https://t.me/s/vpnbuying",
+"https://t.me/s/vrayconfigs",
+"https://t.me/s/freevpn12340",
+"https://t.me/s/ghalagyann",
+"https://t.me/s/config_v2ray_free1"
       # --- НОВЫЕ ИСТОЧНИКИ ДЛЯ РОССИИ ---
 ]
 
