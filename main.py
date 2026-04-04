@@ -81,7 +81,7 @@ URLS_MY = [
     "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/hysteria2.txt",
     "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/hy2.txt",
     "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/githubmirror/clean/tuic.txt",
-      # --- НОВЫЕ ИСТОЧНИКИ ДЛЯ ЕВРОПЫ ---
+      # --- НОВЫЕ ИСТОЧНИКИ ТГ ---
     "https://t.me/s/AzadNet",
     "https://t.me/s/oneclickvpnkeys",
 "https://t.me/s/vpnfail_vless",
@@ -110,7 +110,20 @@ URLS_MY = [
 "https://t.me/s/freevpn12340",
 "https://t.me/s/ghalagyann",
 "https://t.me/s/config_v2ray_free1"
-      # --- НОВЫЕ ИСТОЧНИКИ ДЛЯ РОССИИ ---
+   "https://t.me/s/webhube",
+"https://t.me/s/CD_ConfigsHub",
+"https://t.me/s/V2ry_Proxy",
+"https://t.me/s/V2RayyNGvpn",
+"https://t.me/s/V2Net_iran",
+"https://t.me/s/v2ray_for_free",
+"https://t.me/s/ConfigsHub",
+"https://t.me/s/WEBHUBE",
+"https://t.me/s/v2Line",
+"https://t.me/s/v2ray_youtube",
+"https://t.me/s/v2rayngvpnnnn",
+"https://t.me/s/ripaojiedian",
+
+      # ---  ---
 ]
 
 EURO_CODES = {
